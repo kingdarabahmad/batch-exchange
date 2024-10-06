@@ -1,0 +1,49 @@
+# Logs for frontend
+frontend/logs
+frontend/*.log
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/pnpm-debug.log*
+frontend/lerna-debug.log*
+
+# Node modules and build outputs for frontend
+frontend/node_modules
+frontend/dist
+frontend/dist-ssr
+frontend/*.local
+
+# Editor directories and files for frontend
+frontend/.vscode/*
+!frontend/.vscode/extensions.json
+frontend/.idea
+frontend/.DS_Store
+frontend/*.suo
+frontend/*.ntvs*
+frontend/*.njsproj
+frontend/*.sln
+frontend/*.sw?
+
+
+
+
+
+# Backend cache and output folders
+backend/cache/
+backend/out/
+
+# Ignores development broadcast logs in the backend folder
+!backend/broadcast
+backend/broadcast/*/31337/
+backend/broadcast/**/dry-run/
+
+# Backend docs folder
+backend/docs/
+
+# Backend dotenv file
+backend/.env
+
+
+.vscode/
+
+
