@@ -83,6 +83,7 @@ contract BatchAuction is Ownable {
     ///////////////////////////
     event OrderExpired(Order indexed order);
     event MarketCannotBeExecuted(uint256 indexed minOrdersToExecuteMarket, uint256 indexed totalOrdersPresent);
+    event OrdersExecutedForMarket(address indexed market, uint256 indexed clearingPrice);
 
     ////////////////
     // Modifiers  //
@@ -270,6 +271,137 @@ contract BatchAuction is Ownable {
         return (buyOrders, sellOrders);
     }
 
+    function _findClearingPrice(Order[] memory _buyOrders, Order[] memory _sellOrders)
+        internal
+        pure
+        returns (uint256)
+    {
+        uint256 i = 0;
+        uint256 j = 0;
+        uint256 cummulativeDemand = 0;
+        uint256 cummulativeSupply = 0;
+
+        while (i < _buyOrders.length && j < _sellOrders.length) {
+            if (_buyOrders[i].price >= _sellOrders[j].price) {
+                cummulativeDemand += _buyOrders[i].quantity;
+                cummulativeSupply += _sellOrders[j].quantity;
+
+                if (cummulativeDemand >= cummulativeSupply) {
+                    return _sellOrders[j].price;
+                }
+                j++;
+            } else {
+                i++;
+            }
+        }
+        return 0;
+    }
+
+    function _matchOrders(Order[] memory _buyOrders, Order[] memory _sellOrders, uint256 _clearingPrice)
+        internal
+        returns (Order[] memory, Order[] memory)
+    {
+        uint256 i = 0;
+        uint256 j = 0;
+
+        while (i < _buyOrders.length && j < _sellOrders.length) {
+            if (_buyOrders[i].price >= _clearingPrice && _sellOrders[j].price <= _clearingPrice) {
+                uint256 tradeQuantity = (_buyOrders[i].quantity - _buyOrders[i].fulfilledAmount)
+                    < (_sellOrders[j].quantity - _sellOrders[j].fulfilledAmount)
+                    ? _buyOrders[i].quantity - _buyOrders[i].fulfilledAmount
+                    : _sellOrders[j].quantity - _sellOrders[j].fulfilledAmount;
+
+                _buyOrders[i].fulfilledAmount += tradeQuantity;
+                _buyOrders[i].status = OrderStatus.PartiallyMatched;
+
+                _sellOrders[j].fulfilledAmount += tradeQuantity;
+                _sellOrders[j].status = OrderStatus.PartiallyMatched;
+
+                //exchange the tokens
+                IERC20(_buyOrders[i].token).transfer(_buyOrders[i].user, tradeQuantity);
+                EXCHANGE_CURRENCY.transfer(_sellOrders[j].user, tradeQuantity * _clearingPrice);
+
+                if (_buyOrders[i].fulfilledAmount == _buyOrders[i].quantity) {
+                    _buyOrders[i].status = OrderStatus.Matched;
+                    i++;
+                }
+
+                if (_sellOrders[j].fulfilledAmount == _sellOrders[j].quantity) {
+                    _sellOrders[j].status = OrderStatus.Matched;
+                    j++;
+                }
+            } else {
+                if (_buyOrders[i].price < _clearingPrice) {
+                    i++;
+                } else if (_sellOrders[j].price > _clearingPrice) {
+                    j++;
+                }
+            }
+        }
+        return (_buyOrders, _sellOrders);
+    }
+
+    function _updateCurrentOrders(address _marketId, Order[] memory _buyOrders, Order[] memory _sellOrders) internal {
+        _buyOrders = _sortOrdersByCreatedAt(_buyOrders, false);
+        _sellOrders = _sortOrdersByCreatedAt(_sellOrders, false);
+
+        while (currentOrders[_marketId].length > 0) {
+            currentOrders[_marketId].pop();
+        }
+        uint256 j;
+        uint256 i;
+        while (i < _buyOrders.length && j < _sellOrders.length) {
+            if (_buyOrders[i].createdAt <= _sellOrders[j].createdAt) {
+                if (_buyOrders[i].status == OrderStatus.Matched) {
+                    _changeStatusAndMoveToHistoricalData(
+                        _marketId, _buyOrders[i], OrderStatus.Matched, OrderLocation.MemoryOrders
+                    );
+                } else if (_buyOrders[i].expiresAt <= block.timestamp) {
+                    _expireOrder(_marketId, _buyOrders[i], OrderLocation.MemoryOrders);
+                } else {
+                    currentOrders[_marketId].push(_buyOrders[i]);
+                }
+                i++;
+            } else {
+                if (_sellOrders[j].status == OrderStatus.Matched) {
+                    _changeStatusAndMoveToHistoricalData(
+                        _marketId, _sellOrders[j], OrderStatus.Matched, OrderLocation.MemoryOrders
+                    );
+                } else if (_sellOrders[j].expiresAt <= block.timestamp) {
+                    _expireOrder(_marketId, _sellOrders[j], OrderLocation.MemoryOrders);
+                } else {
+                    currentOrders[_marketId].push(_sellOrders[j]);
+                }
+                j++;
+            }
+        }
+        if (i < _buyOrders.length) {
+            for (uint256 x = i; x < _buyOrders.length; x++) {
+                if (_buyOrders[x].status == OrderStatus.Matched) {
+                    _changeStatusAndMoveToHistoricalData(
+                        _marketId, _buyOrders[x], OrderStatus.Matched, OrderLocation.MemoryOrders
+                    );
+                } else if (_buyOrders[x].expiresAt <= block.timestamp) {
+                    _expireOrder(_marketId, _buyOrders[x], OrderLocation.MemoryOrders);
+                } else {
+                    currentOrders[_marketId].push(_buyOrders[x]);
+                }
+            }
+        } else if (j < _sellOrders.length) {
+            for (uint256 x = j; x < _sellOrders.length; x++) {
+                if (_sellOrders[x].status == OrderStatus.Matched) {
+                    _changeStatusAndMoveToHistoricalData(
+                        _marketId, _sellOrders[x], OrderStatus.Matched, OrderLocation.MemoryOrders
+                    );
+                } else if (_sellOrders[x].expiresAt <= block.timestamp) {
+                    _expireOrder(_marketId, _sellOrders[x], OrderLocation.MemoryOrders);
+                } else {
+                    currentOrders[_marketId].push(_sellOrders[x]);
+                }
+            }
+        }
+    }
+
     ////////////////////////////////////////////
     // Public and External view Functions     //
     ///////////////////////////////////////////
@@ -300,6 +432,14 @@ contract BatchAuction is Ownable {
     function _sortOrders(Order[] memory _orders, bool _isDesc) internal pure returns (Order[] memory) {
         if (_orders.length > 0) {
             _orders = _quickSort(_orders, 0, _orders.length - 1, "price", _isDesc);
+        }
+
+        return _orders;
+    }
+
+    function _sortOrdersByCreatedAt(Order[] memory _orders, bool _isDesc) internal pure returns (Order[] memory) {
+        if (_orders.length > 0) {
+            _orders = _quickSort(_orders, 0, _orders.length - 1, "createdAt", _isDesc);
         }
 
         return _orders;
@@ -350,5 +490,6 @@ contract BatchAuction is Ownable {
         } else if (keccak256(bytes(key)) == keccak256("price")) {
             return order.price;
         }
+        return 0;
     }
 }
