@@ -35,7 +35,7 @@ contract BatchAuction is Ownable {
     // State variables      //
     ///////////////////////////
 
-    uint8 private constant MINIMUM_EXECUTION_BLOCKS = 10;
+    uint8 private constant MINIMUM_EXECUTION_BLOCKS = 5;
 
     IERC20 private immutable EXCHANGE_CURRENCY;
 
@@ -97,6 +97,12 @@ contract BatchAuction is Ownable {
     // Constructor //
     /////////////////
 
+    /**
+     *
+     * @param _token address of token
+     * @dev constructor for BatchAuction
+     * @notice This constructor creates an instance of BatchAuction and Initializes the EXCHANGE_CURRENCY variable and msg.sender as the owner
+     */
     constructor(address _token) Ownable(msg.sender) {
         EXCHANGE_CURRENCY = IERC20(_token);
     }
@@ -105,6 +111,13 @@ contract BatchAuction is Ownable {
     //  Public and External functions  //
     /////////////////////////////////////
 
+    /**
+     *
+     * @param _token address of token to create or update market
+     * @param _minBlocks minimum number of blocks required to execute an order
+     * @param _status status of market (Active, Inactive)
+     * @dev create or update market data
+     */
     function createOrUpdateMarket(address _token, uint8 _minBlocks, bool _status) external onlyOwner {
         if (_minBlocks < MINIMUM_EXECUTION_BLOCKS) {
             revert LessThanMinimumExecutionBlock();
@@ -120,6 +133,10 @@ contract BatchAuction is Ownable {
         markets.push(_token);
     }
 
+    /**
+     *
+     * @dev execute  orders for all markets
+     */
     function executeAllOrdersforAllMarkets() external {
         for (uint256 i = 0; i < markets.length; i++) {
             _executeAllOrdersForGivenMarket(markets[i]);
@@ -130,8 +147,15 @@ contract BatchAuction is Ownable {
     // Private and Internal Functions     //
     /////////////////////////////////////////
 
+    /**
+     *
+     * @param _marketId address of market to execute orders
+     * @dev execute orders for given market
+     */
     function _executeAllOrdersForGivenMarket(address _marketId) internal {
+        //checks that if the specific market pending orders has less than minBlocks orders then  execute order form currentOrders array
         if (pendingOrders[_marketId].length < marketsData[_marketId].minBlocks) {
+            //check current orders has expired or not if yes then remove the order from current orders
             while (currentOrders[_marketId].length > 0) {
                 if (currentOrders[_marketId][0].expiresAt < block.timestamp) {
                     _expireOrder(_marketId, currentOrders[_marketId][0], OrderLocation.CurrentOrders);
@@ -155,7 +179,15 @@ contract BatchAuction is Ownable {
         emit OrdersExecutedForMarket(_marketId, clearingPrice);
     }
 
+    /**
+     *
+     * @param _marketId address of market whose orders are to be expired
+     * @param _order Order to be expired
+     * @param _orderLocation OrderLocation to be expired
+     * @dev expire order and move it to historical data
+     */
     function _expireOrder(address _marketId, Order memory _order, OrderLocation _orderLocation) internal {
+        //if order status is partially matched then move it to historical data else move it to expired
         if (_order.status == OrderStatus.PartiallyMatched) {
             _changeStatusAndMoveToHistoricalData(_marketId, _order, OrderStatus.PartiallyMatched, _orderLocation);
         } else {
@@ -165,6 +197,13 @@ contract BatchAuction is Ownable {
         emit OrderExpired(_order);
     }
 
+    /**
+     *
+     * @param _marketId address of market whose orders are to be expired
+     * @param _order Order to be expired
+     * @param _orderLocation OrderLocation to be expired
+     * @dev expire order and move it to historical data
+     */
     function _changeStatusAndMoveToHistoricalData(
         address _marketId,
         Order memory _order,
@@ -207,12 +246,19 @@ contract BatchAuction is Ownable {
         historicalOrders[_marketId][historicalOrders[_marketId].length - 1].status = _status;
     }
 
+    /**
+     *
+     * @param _marketId address of market whose orders
+     */
     function _transferAndSegregate(address _marketId) internal returns (Order[] memory, Order[] memory) {
+        //find total number current orders and pending orders
         uint256 totalCurrentOrders = currentOrders[_marketId].length;
         uint256 totalPendingOrders = pendingOrders[_marketId].length;
 
         uint256 totalBuyOrders;
         uint256 totalSellOrders;
+
+        //find total no. of buy and sell orders from current orders
         for (uint256 i = 0; i < totalCurrentOrders; i++) {
             if (currentOrders[_marketId][i].expiresAt > block.timestamp) {
                 if (currentOrders[_marketId][i].isBuyOrder) {
@@ -222,6 +268,8 @@ contract BatchAuction is Ownable {
                 }
             }
         }
+
+        //find total no. of buy and sell orders from pending orders
         for (uint256 i = 0; i < totalPendingOrders; i++) {
             if (pendingOrders[_marketId][i].expiresAt > block.timestamp) {
                 if (pendingOrders[_marketId][i].isBuyOrder) {
@@ -237,6 +285,7 @@ contract BatchAuction is Ownable {
 
         uint256 j;
         uint256 k;
+        // push the orders in buyOrders and sellOrders from current orders while comparing their expiry time
         for (uint256 i = 0; i < totalCurrentOrders; i++) {
             if (currentOrders[_marketId][i].expiresAt <= block.timestamp) {
                 _expireOrder(_marketId, currentOrders[_marketId][i], OrderLocation.CurrentOrders);
@@ -249,12 +298,18 @@ contract BatchAuction is Ownable {
             }
         }
 
+        // loop through pending orders 
         while (pendingOrders[_marketId].length > 0) {
+
+            //check if index 0 of pending orders has expired or not if yes then remove the order from pending orders
             if (pendingOrders[_marketId][0].expiresAt <= block.timestamp) {
                 _expireOrder(_marketId, pendingOrders[_marketId][0], OrderLocation.PendingOrders);
             } else {
+                // if not expired then set that order as active and push it in current orders
                 pendingOrders[_marketId][0].status = OrderStatus.Active;
                 currentOrders[_marketId].push(pendingOrders[_marketId][0]);
+                
+                //check if that order is buy or sell based on it push it in buyOrders or sellOrders
                 if (pendingOrders[_marketId][0].isBuyOrder) {
                     buyOrders[j] = pendingOrders[_marketId][0];
                     j++;
@@ -263,11 +318,14 @@ contract BatchAuction is Ownable {
                     k++;
                 }
             }
+
+            //remove order from the pending order
             if (pendingOrders[_marketId].length > 0) {
                 pendingOrders[_marketId][0] = pendingOrders[_marketId][pendingOrders[_marketId].length - 1];
                 pendingOrders[_marketId].pop();
             }
         }
+
         return (buyOrders, sellOrders);
     }
 
